@@ -40,6 +40,9 @@ Los modelos de MediaPipe (~30 MB) se descargan solos la primera vez en `ejercici
 # Tú haciendo sentadilla con barra + músculos en rojo
 python generar_ejercicios.py --foto mi_cara.jpg
 
+# Describe a la persona (en inglés): InstantID copia la cara, pero no el pelo ni el cuerpo
+python generar_ejercicios.py --foto mi_cara.jpg --descripcion "a young woman with long straight dark brown hair"
+
 # Mejor resultado: foto de referencia con la postura (de cualquier persona, cara visible)
 python generar_ejercicios.py --foto mi_cara.jpg --pose referencia_sentadilla.jpg
 
@@ -60,6 +63,9 @@ Salida en `resultados/`:
 ## Consejos
 
 - **Foto de la cara**: de frente, nítida, bien iluminada, sin gafas de sol.
+- **Cara y cuerpo**: InstantID solo copia la cara; el cuerpo, el pelo y la ropa salen del
+  texto (`--descripcion`). Si quieres que también el cuerpo sea el real, usa una foto real
+  de la persona haciendo la sentadilla con `--marcar`.
 - **Cuerpo entero**: InstantID pone la cara del resultado donde está en la foto de entrada,
   así que un selfie daría un primer plano. Sin `--pose` el script reduce tu cara y la coloca
   arriba en un lienzo vertical para que salga el cuerpo entero. Con `--pose` la postura y el

@@ -40,10 +40,10 @@ MODELO = "zsxkib/instant-id"
 
 # Descripción de cada ejercicio (en inglés: el modelo responde mejor)
 EJERCICIOS = {
-    "sentadilla":     "doing a heavy barbell back squat, full body shot from head to feet, "
+    "sentadilla":     "doing a barbell back squat, full body shot from head to feet, "
                       "three-quarter side view, deep squat position with thighs parallel to the floor, "
                       "loaded olympic barbell resting on the upper back, hands gripping the bar, "
-                      "wearing a fitted tank top and athletic shorts, bare muscular legs",
+                      "wearing a fitted sports top and athletic shorts, bare legs",
     "press_banca":    "lying on a bench doing a barbell bench press, arms extended",
     "peso_muerto":    "performing a deadlift, lifting a loaded barbell from the floor, straight back",
     "dominadas":      "doing pull-ups on a pull-up bar, chin above the bar, back muscles engaged",
@@ -58,8 +58,9 @@ EJERCICIOS = {
 }
 
 PROMPT_BASE = (
-    "photorealistic photo of the person, {ejercicio}, in a modern gym, "
+    "photorealistic photo of {persona}, {ejercicio}, in a modern gym, "
     "athletic sportswear, natural gym lighting, sweat, realistic skin texture, "
+    "natural body proportions, "
     "sharp focus, shot on a full-frame DSLR, 50mm lens, high detail, 8k"
 )
 
@@ -127,10 +128,11 @@ def encuadre_cuerpo_entero(foto: Path) -> Image.Image:
 
 
 def generar(foto: Path, ejercicio: str, variantes: int, semilla, salida: Path, ref: str,
-            pose: Path = None, marcar: bool = True, leyenda: bool = True):
+            pose: Path = None, marcar: bool = True, leyenda: bool = True,
+            descripcion: str = "the person"):
     import replicate
 
-    prompt = PROMPT_BASE.format(ejercicio=EJERCICIOS[ejercicio])
+    prompt = PROMPT_BASE.format(persona=descripcion, ejercicio=EJERCICIOS[ejercicio])
     with ExitStack() as pila:
         entrada = {
             "prompt": prompt,
@@ -192,6 +194,9 @@ def main():
                         help="No genera nada: solo marca los músculos en estas fotos de cuerpo entero")
     p.add_argument("--ejercicios", nargs="*", default=["sentadilla"],
                    help=f"Opciones: {', '.join(EJERCICIOS)} (por defecto: sentadilla)")
+    p.add_argument("--descripcion", default="the person",
+                   help="Cómo es la persona, en inglés (InstantID copia la cara, no el pelo ni el cuerpo). "
+                        "Ej.: \"a young woman with long straight dark brown hair\"")
     p.add_argument("--pose", help="Foto de referencia de cuerpo entero con la postura deseada "
                                   "(de cualquier persona, con la cara visible). Muy recomendable")
     p.add_argument("--variantes", type=int, default=2, help="Imágenes por ejercicio (1-4)")
@@ -239,7 +244,8 @@ def main():
     for ej in args.ejercicios:
         try:
             generar(foto, ej, max(1, min(args.variantes, 4)), args.semilla, salida, ref,
-                    pose=pose, marcar=not args.sin_musculos, leyenda=not args.sin_leyenda)
+                    pose=pose, marcar=not args.sin_musculos, leyenda=not args.sin_leyenda,
+                    descripcion=args.descripcion)
         except Exception as e:
             print(f"   error en '{ej}': {e}")
 
