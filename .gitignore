@@ -22,3 +22,8 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Ejercicios (Python)
+__pycache__/
+ejercicios/modelos/
+ejercicios/resultados/
