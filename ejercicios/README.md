@@ -1,7 +1,7 @@
 # Tu cara haciendo ejercicio, con los músculos en rojo
 
-Genera una foto fotorrealista de **la persona de tu foto haciendo sentadilla con barra**
-y marca en rojo los músculos que trabajan:
+Genera una foto fotorrealista de **la persona de tu foto (cara y complexión) haciendo
+sentadilla con barra** y marca en rojo los músculos que trabajan:
 
 | | Músculo | Papel |
 |---|---|---|
@@ -15,7 +15,11 @@ y marca en rojo los músculos que trabajan:
 
 Cómo funciona:
 
-1. **InstantID** (en Replicate) conserva tu cara a partir de una sola foto.
+1. La imagen se crea con uno de dos motores:
+   - **Gemini** (por defecto): ve la foto entera y conserva la cara, el pelo y la complexión.
+     Prueba en orden `gemini-3-pro-image-preview`, `gemini-3.1-flash-image-preview` y
+     `gemini-2.5-flash-image` (o el que indiques con `--modelo`).
+   - **InstantID** (Replicate, `--motor instantid`): conserva solo la cara; el cuerpo sale del texto.
 2. **MediaPipe Pose** detecta el cuerpo en la imagen generada (33 puntos + silueta).
 3. Cada músculo se dibuja como una zona anatómica entre articulaciones, recortada con la
    silueta para que el rojo no se salga del cuerpo. Se adapta a la vista: lateral
@@ -28,8 +32,9 @@ Cómo funciona:
 ```bash
 cd ejercicios
 pip install -r requirements.txt
-export REPLICATE_API_TOKEN="tu_token"        # https://replicate.com/account/api-tokens
-# Windows PowerShell:  $env:REPLICATE_API_TOKEN="tu_token"
+export GEMINI_API_KEY="tu_clave"             # https://aistudio.google.com/apikey
+export REPLICATE_API_TOKEN="tu_token"        # solo para --motor instantid
+# Windows PowerShell:  $env:GEMINI_API_KEY="tu_clave"
 ```
 
 Los modelos de MediaPipe (~30 MB) se descargan solos la primera vez en `ejercicios/modelos/`.
@@ -37,14 +42,14 @@ Los modelos de MediaPipe (~30 MB) se descargan solos la primera vez en `ejercici
 ## Uso
 
 ```bash
-# Tú haciendo sentadilla con barra + músculos en rojo
-python generar_ejercicios.py --foto mi_cara.jpg
+# La persona de la foto (cara y complexión) haciendo sentadilla con barra + músculos en rojo
+python generar_ejercicios.py --foto foto.jpg
 
-# Describe a la persona (en inglés): InstantID copia la cara, pero no el pelo ni el cuerpo
-python generar_ejercicios.py --foto mi_cara.jpg --descripcion "a young woman with long straight dark brown hair"
+# Copiar además la postura y el ángulo de otra foto (de cualquier persona)
+python generar_ejercicios.py --foto foto.jpg --pose referencia_sentadilla.jpg
 
-# Mejor resultado: foto de referencia con la postura (de cualquier persona, cara visible)
-python generar_ejercicios.py --foto mi_cara.jpg --pose referencia_sentadilla.jpg
+# Con InstantID: describe a la persona (en inglés), porque solo copia la cara
+python generar_ejercicios.py --foto mi_cara.jpg --motor instantid --descripcion "a young woman with long straight dark brown hair"
 
 # Solo marcar los músculos en una foto que ya tienes (no usa Replicate ni token)
 python generar_ejercicios.py --marcar foto_haciendo_sentadilla.jpg
@@ -63,10 +68,10 @@ Salida en `resultados/`:
 ## Consejos
 
 - **Foto de la cara**: de frente, nítida, bien iluminada, sin gafas de sol.
-- **Cara y cuerpo**: InstantID solo copia la cara; el cuerpo, el pelo y la ropa salen del
-  texto (`--descripcion`). Si quieres que también el cuerpo sea el real, usa una foto real
-  de la persona haciendo la sentadilla con `--marcar`.
-- **Cuerpo entero**: InstantID pone la cara del resultado donde está en la foto de entrada,
+- **Cara y cuerpo**: con Gemini se conserva la complexión que se ve en la foto; lo que la foto
+  no enseña (por ejemplo, las piernas bajo una toga) lo tiene que imaginar. InstantID solo
+  copia la cara. Para que el cuerpo sea 100 % real, usa una foto real con `--marcar`.
+- **Cuerpo entero (InstantID)**: InstantID pone la cara del resultado donde está en la foto de entrada,
   así que un selfie daría un primer plano. Sin `--pose` el script reduce tu cara y la coloca
   arriba en un lienzo vertical para que salga el cuerpo entero. Con `--pose` la postura y el
   encuadre salen de la foto de referencia, que es lo más fiable.

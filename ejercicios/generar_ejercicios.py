@@ -1,22 +1,29 @@
 """
-Genera imágenes fotorrealistas de TU rostro haciendo distintos ejercicios
+Genera imágenes fotorrealistas de la persona de TU foto haciendo distintos ejercicios
 y marca en rojo los músculos que trabajan.
 
-1. InstantID (Replicate) conserva la identidad de la cara a partir de una sola foto.
+1. La imagen se crea con uno de dos motores:
+   - gemini (por defecto): Gemini ve la foto entera y conserva la cara, el pelo y la
+     complexión de la persona (lo más parecido a su cuerpo real).
+   - instantid (Replicate): conserva solo la cara; el cuerpo sale del texto.
 2. MediaPipe detecta la pose en la imagen generada y pinta los músculos implicados
    (rojo intenso = motores principales, rojo suave = sinergistas / estabilizadores).
 
 Requisitos:
     pip install -r requirements.txt
-    export REPLICATE_API_TOKEN="tu_token"     # https://replicate.com/account/api-tokens
-    (Windows PowerShell:  $env:REPLICATE_API_TOKEN="tu_token")
+    export GEMINI_API_KEY="tu_clave"          # https://aistudio.google.com/apikey
+    export REPLICATE_API_TOKEN="tu_token"     # solo para --motor instantid
+    (Windows PowerShell:  $env:GEMINI_API_KEY="tu_clave")
 
 Uso:
-    # Tú haciendo sentadilla con barra, con los músculos marcados en rojo
-    python generar_ejercicios.py --foto mi_cara.jpg
+    # La persona de la foto (cara y cuerpo) haciendo sentadilla con barra, músculos en rojo
+    python generar_ejercicios.py --foto foto.jpg
 
-    # Mejor resultado: añade una foto de referencia con la postura (de cualquier persona)
-    python generar_ejercicios.py --foto mi_cara.jpg --pose referencia_sentadilla.jpg
+    # Copiar además la postura y el ángulo de otra foto (de cualquier persona)
+    python generar_ejercicios.py --foto foto.jpg --pose referencia_sentadilla.jpg
+
+    # Con InstantID en Replicate (solo conserva la cara)
+    python generar_ejercicios.py --foto mi_cara.jpg --motor instantid
 
     # Solo marcar los músculos en una foto que ya tienes (no usa Replicate)
     python generar_ejercicios.py --marcar foto_haciendo_sentadilla.jpg
@@ -26,6 +33,7 @@ Uso:
 """
 
 import argparse
+import io
 import os
 import sys
 import tempfile
@@ -37,6 +45,8 @@ from PIL import Image, ImageOps
 from musculos import MAPAS, detectar_cara, marcar_musculos
 
 MODELO = "zsxkib/instant-id"
+# Modelos de imagen de Gemini, de más a menos fiel; si uno no está disponible se usa el siguiente
+MODELOS_GEMINI = ["gemini-3-pro-image-preview", "gemini-3.1-flash-image-preview", "gemini-2.5-flash-image"]
 
 # Descripción de cada ejercicio (en inglés: el modelo responde mejor)
 EJERCICIOS = {
@@ -68,6 +78,19 @@ NEGATIVE = (
     "cartoon, anime, illustration, painting, 3d render, cgi, plastic skin, "
     "deformed hands, extra fingers, extra limbs, distorted face, blurry, "
     "low quality, watermark, text, bad anatomy, close-up, headshot, cropped body, out of frame"
+)
+
+PROMPT_GEMINI = (
+    "Photorealistic photo of the same person shown in the reference photo{extra}, {ejercicio}, "
+    "in a modern gym, natural gym lighting, realistic skin texture, sharp focus, shot on a full-frame DSLR. "
+    "Keep the person's identity exactly: same face, facial features, hair, skin tone, and the same body "
+    "build, weight and proportions as in the reference photo. Do not make the body slimmer, more muscular "
+    "or idealized. Do not keep the outfit, hat or objects from the reference photo. "
+    "No text, no watermark.{pose}"
+)
+PROMPT_GEMINI_POSE = (
+    " A second image is attached: copy only the body pose and camera angle from it. It shows a "
+    "different person, so never use it for the face or the body."
 )
 
 # Lienzo vertical para el encuadre de cuerpo entero (múltiplos de 64, ~1 Mpx como SDXL)
@@ -127,12 +150,70 @@ def encuadre_cuerpo_entero(foto: Path) -> Image.Image:
     return lienzo
 
 
+def _config_gemini(types, modelo):
+    opciones = {"aspect_ratio": "3:4"}
+    if modelo.startswith("gemini-3"):
+        opciones["image_size"] = "2K"
+    try:
+        return types.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"],
+                                           image_config=types.ImageConfig(**opciones))
+    except Exception:  # SDK antiguo sin ImageConfig
+        return types.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"])
+
+
+def _imagen_gemini(cliente, types, modelos, contenido) -> bytes:
+    """Pide una imagen probando los modelos en orden; quita de la lista los que fallan."""
+    errores = []
+    while modelos:
+        modelo = modelos[0]
+        try:
+            resp = cliente.models.generate_content(model=modelo, contents=contenido,
+                                                   config=_config_gemini(types, modelo))
+        except Exception as e:
+            errores.append(f"{modelo}: {e}")
+            modelos.pop(0)
+            continue
+        candidato = resp.candidates[0] if resp.candidates else None
+        partes = candidato.content.parts if candidato and candidato.content and candidato.content.parts else []
+        for parte in partes:
+            if parte.inline_data and parte.inline_data.data:
+                return parte.inline_data.data
+        texto = " ".join(p.text for p in partes if getattr(p, "text", None))
+        motivo = (getattr(candidato, "finish_reason", None) if candidato
+                  else getattr(resp.prompt_feedback, "block_reason", None))
+        raise RuntimeError(f"{modelo} no devolvió imagen ({motivo}). {texto}".strip())
+    raise RuntimeError("ningún modelo de Gemini respondió:\n     " + "\n     ".join(errores))
+
+
+def generar_gemini(foto: Path, ejercicio: str, variantes: int, salida: Path, modelos: list,
+                   pose: Path = None, marcar: bool = True, leyenda: bool = True, descripcion: str = None):
+    from google import genai
+    from google.genai import types
+
+    cliente = genai.Client()  # lee GEMINI_API_KEY (o GOOGLE_API_KEY)
+    prompt = PROMPT_GEMINI.format(extra=f" ({descripcion})" if descripcion else "",
+                                  ejercicio=EJERCICIOS[ejercicio],
+                                  pose=PROMPT_GEMINI_POSE if pose else "")
+    contenido = [prompt, ImageOps.exif_transpose(Image.open(foto)).convert("RGB")]
+    if pose:
+        contenido.append(ImageOps.exif_transpose(Image.open(pose)).convert("RGB"))
+
+    print(f"→ Generando '{ejercicio}' con Gemini...")
+    for i in range(1, variantes + 1):
+        datos = _imagen_gemini(cliente, types, modelos, contenido)
+        destino = salida / f"{ejercicio}_{i}.png"
+        Image.open(io.BytesIO(datos)).save(destino)
+        print(f"   guardada: {destino}  ({modelos[0]})")
+        if marcar and ejercicio in MAPAS:
+            marcar_imagen(destino, ejercicio, leyenda)
+
+
 def generar(foto: Path, ejercicio: str, variantes: int, semilla, salida: Path, ref: str,
             pose: Path = None, marcar: bool = True, leyenda: bool = True,
-            descripcion: str = "the person"):
+            descripcion: str = None):
     import replicate
 
-    prompt = PROMPT_BASE.format(persona=descripcion, ejercicio=EJERCICIOS[ejercicio])
+    prompt = PROMPT_BASE.format(persona=descripcion or "the person", ejercicio=EJERCICIOS[ejercicio])
     with ExitStack() as pila:
         entrada = {
             "prompt": prompt,
@@ -189,18 +270,21 @@ def marcar_imagen(origen: Path, ejercicio: str, leyenda: bool = True, salida: Pa
 def main():
     p = argparse.ArgumentParser(description="Tu cara haciendo ejercicios, fotorrealista, con los músculos en rojo.")
     origen = p.add_mutually_exclusive_group(required=True)
-    origen.add_argument("--foto", help="Foto frontal y nítida de tu cara")
+    origen.add_argument("--foto", help="Foto de la persona, con la cara de frente y nítida")
     origen.add_argument("--marcar", nargs="+", metavar="IMAGEN",
                         help="No genera nada: solo marca los músculos en estas fotos de cuerpo entero")
     p.add_argument("--ejercicios", nargs="*", default=["sentadilla"],
                    help=f"Opciones: {', '.join(EJERCICIOS)} (por defecto: sentadilla)")
-    p.add_argument("--descripcion", default="the person",
-                   help="Cómo es la persona, en inglés (InstantID copia la cara, no el pelo ni el cuerpo). "
+    p.add_argument("--motor", choices=["gemini", "instantid"], default="gemini",
+                   help="gemini: conserva cara y complexión (por defecto). instantid: solo la cara")
+    p.add_argument("--modelo", help=f"Modelo de Gemini concreto (por defecto prueba: {', '.join(MODELOS_GEMINI)})")
+    p.add_argument("--descripcion",
+                   help="Cómo es la persona, en inglés (sobre todo con instantid, que no copia pelo ni cuerpo). "
                         "Ej.: \"a young woman with long straight dark brown hair\"")
     p.add_argument("--pose", help="Foto de referencia de cuerpo entero con la postura deseada "
                                   "(de cualquier persona, con la cara visible). Muy recomendable")
     p.add_argument("--variantes", type=int, default=2, help="Imágenes por ejercicio (1-4)")
-    p.add_argument("--semilla", type=int, default=None, help="Para resultados repetibles")
+    p.add_argument("--semilla", type=int, default=None, help="Para resultados repetibles (solo instantid)")
     p.add_argument("--salida", default="resultados", help="Carpeta de salida")
     p.add_argument("--sin-musculos", action="store_true", help="No marcar los músculos")
     p.add_argument("--sin-leyenda", action="store_true", help="Marcar los músculos sin el panel lateral")
@@ -224,7 +308,9 @@ def main():
         print(f"\nListo. Imágenes en: {salida.resolve()}")
         return
 
-    if not os.environ.get("REPLICATE_API_TOKEN"):
+    if args.motor == "gemini" and not (os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")):
+        sys.exit("Falta GEMINI_API_KEY. Consíguela en https://aistudio.google.com/apikey")
+    if args.motor == "instantid" and not os.environ.get("REPLICATE_API_TOKEN"):
         sys.exit("Falta REPLICATE_API_TOKEN. Consíguelo en replicate.com/account/api-tokens")
 
     foto = Path(args.foto)
@@ -240,12 +326,19 @@ def main():
     if sin_mapa and not args.sin_musculos:
         print(f"Aviso: sin mapa muscular para {sin_mapa}; de esos se guarda solo la foto.")
 
-    ref = version_actual()
+    variantes = max(1, min(args.variantes, 4))
+    opciones = dict(pose=pose, marcar=not args.sin_musculos, leyenda=not args.sin_leyenda,
+                    descripcion=args.descripcion)
+    if args.motor == "gemini":
+        modelos = [args.modelo] if args.modelo else list(MODELOS_GEMINI)
+    else:
+        ref = version_actual()
     for ej in args.ejercicios:
         try:
-            generar(foto, ej, max(1, min(args.variantes, 4)), args.semilla, salida, ref,
-                    pose=pose, marcar=not args.sin_musculos, leyenda=not args.sin_leyenda,
-                    descripcion=args.descripcion)
+            if args.motor == "gemini":
+                generar_gemini(foto, ej, variantes, salida, modelos, **opciones)
+            else:
+                generar(foto, ej, variantes, args.semilla, salida, ref, **opciones)
         except Exception as e:
             print(f"   error en '{ej}': {e}")
 
